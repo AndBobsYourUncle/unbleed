@@ -1,0 +1,12 @@
+# build output and local environments
+build/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# third-party sources are fetched by scripts/bootstrap.sh
+third_party/
+
+# personal audio recordings (calibration takes, OBS sessions) — never commit these
+recordings/

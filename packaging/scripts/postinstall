@@ -1,0 +1,4 @@
+#!/bin/sh
+# Restart Core Audio so the Unbleed Mic / Unbleed Desktop devices load (audio pauses for a moment).
+launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null || killall coreaudiod 2>/dev/null
+exit 0

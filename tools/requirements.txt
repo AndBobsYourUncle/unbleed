@@ -1,0 +1,7 @@
+# Python tools in tools/ (evaluation, session analysis, offline DTLN). Install: scripts/bootstrap.sh --tools
+numpy
+scipy
+soundfile
+pesq
+onnxruntime
+ai-edge-litert

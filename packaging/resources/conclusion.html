@@ -1,0 +1,29 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px -apple-system, "SF Pro Text", sans-serif; line-height: 1.5; margin: 0 8px; }
+  h1 { font: 600 20px -apple-system, "SF Pro Display", sans-serif; margin: 6px 0 12px; }
+  .grad { background: linear-gradient(90deg, #2BE4FF, #9B5CFF 55%, #FF4FD8); -webkit-background-clip: text; color: transparent; }
+  ol { padding-left: 20px; margin: 4px 0 12px; }
+  li { margin: 5px 0; }
+  code { font: 12px ui-monospace, Menlo, monospace; padding: 1px 4px; border-radius: 4px; background: rgba(127,127,127,.15); }
+  .note { font-size: 12px; opacity: .65; }
+</style>
+</head>
+<body>
+  <h1>You're set. <span class="grad">Go stream.</span></h1>
+  <ol>
+    <li>Open <b>Unbleed</b> from Applications and allow microphone and system audio access when asked.
+        Look for the waveform icon in your menu bar.</li>
+    <li>In OBS, add <b>Audio Input Capture → Unbleed Mic</b> for your voice and
+        <b>Audio Input Capture → Unbleed Desktop</b> for game audio.</li>
+    <li>Turn off audio on your screen capture source, and leave monitoring off.</li>
+    <li>Optional: in Unbleed's menu, turn on <b>Launch at Login</b>.</li>
+  </ol>
+  <p class="note">Pick a different microphone any time from the menu bar. Everything Unbleed does is
+     logged to <code>~/Library/Logs/Unbleed.log</code>.</p>
+</body>
+</html>

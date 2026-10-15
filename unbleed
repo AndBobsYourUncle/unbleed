@@ -1,0 +1,24 @@
+#!/bin/zsh
+# Runs Unbleed.app with this terminal's output. Launching through `open` makes macOS ask for
+# microphone/system-audio permission on behalf of Unbleed itself rather than the terminal app.
+# Ctrl-C is forwarded so the app shuts down cleanly (and writes any recording).
+APP="${0:A:h}/build/Unbleed.app"
+[[ -d $APP ]] || { echo "build first: ./build.sh" >&2; exit 1 }
+
+# `open` needs a real terminal or file for output; when piped, go through a temp file.
+follower=
+if [[ -t 1 ]]; then
+    out=$(tty)
+else
+    out=$(mktemp -t unbleed)
+    tail -f "$out" & follower=$!
+fi
+open -W -n --stdout "$out" --stderr "$out" "$APP" --args "$@" &
+launcher=$!
+
+stop() { pkill -INT -f "$APP/Contents/MacOS/unbleed"; }
+trap stop INT TERM
+wait $launcher
+# wait returns early when interrupted; keep waiting until the app has exited
+while kill -0 $launcher 2>/dev/null; do wait $launcher; done
+if [[ -n $follower ]]; then sleep 0.2; kill $follower; rm -f "$out"; fi
