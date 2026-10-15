@@ -104,8 +104,11 @@ runs without Homebrew.
 - **Low band:** DTLN-aec, a two-stage LSTM trained for the AEC Challenge, run through ONNX Runtime in
   8 ms hops (about 5% of one CPU core).
 - **High band:** DTLN only works below 8 kHz. Above that, the mic's own high band is gated by how much
-  of the 3–7.5 kHz band DTLN kept, refined per frequency by how much the (delayed) game reference
-  explains. One decision-maker means no "musical noise" chirps.
+  of the 3–7.5 kHz band DTLN kept, refined per frequency by how much the game reference explains.
+  One decision-maker means no "musical noise" chirps.
+- **Room delay:** the speaker→mic delay that lines the reference up for the high band is measured
+  live by cross-correlating mic and game audio (median of recent confident measurements). It's saved
+  with the learned state, so nothing is tuned to one particular room.
 - **Outputs:** two virtual devices built from the BlackHole driver source (2 ch, 48 kHz, can't become
   the system default), so nothing else gets routed through them by accident.
 

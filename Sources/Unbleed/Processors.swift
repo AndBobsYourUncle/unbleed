@@ -75,7 +75,12 @@ final class NeuralProcessor: Processor {
         naec_process(aec, mic, ref, out)
     }
 
-    func status() -> String { "neural, latency \(latency * 1000 / 48000 + hop * 1000 / 48000) ms" }
+    /// Speaker→mic delay the high band is using (measured live).
+    var acousticDelayMs: Float { naec_acoustic_delay_ms(aec) }
+
+    func status() -> String {
+        "neural, latency \(latency * 1000 / 48000 + hop * 1000 / 48000) ms, room \(Int(acousticDelayMs.rounded())) ms"
+    }
 
     func finish() {
         guard let statePath else { return }

@@ -16,7 +16,7 @@ usage: unbleed [options]
   --desktop-output NAME output device for everything the Mac plays except this app, delayed to stay
                         in sync with the cleaned mic, e.g. "Unbleed Desktop"
   --engine NAME         neural or webrtc                       default: neural
-  --delay MS            speaker-to-mic delay                   default: 80
+  --delay MS            starting speaker-to-mic delay (then measured live)  default: 80
 
  neural engine:
   --high-band MODE      above 8 kHz: refaware, steered, or none (DTLN only)   default: refaware
@@ -190,6 +190,7 @@ func db(_ squares: Double, _ n: Int) -> String {
 
 let started = Date()
 nonisolated(unsafe) var ticks = 0
+nonisolated(unsafe) var lastRoomDelay = -1
 NSApplication.shared.setActivationPolicy(.accessory)
 let routing = "\(mic.name) → \(output?.name ?? "no output")"
 let menuBar = MenuBar(
@@ -227,6 +228,13 @@ let meter = Timer(timeInterval: 1, repeats: true) { _ in
     supervisor.tick()
     ticks += 1
     let n = engine.meterSamples
+    if let neural = engine.processors.first as? NeuralProcessor {
+        let room = Int(neural.acousticDelayMs.rounded())
+        if room != lastRoomDelay {
+            if lastRoomDelay >= 0 { Log.write("speaker→mic delay measured: \(room) ms") }
+            lastRoomDelay = room
+        }
+    }
     let recovered = supervisor.recoveries > 0 ? " · \(supervisor.recoveries) recover\(supervisor.recoveries == 1 ? "y" : "ies")" : ""
     if n == 0 {
         menuBar.update(status: "Waiting for audio — is the mic on?\(recovered)", healthy: false)
@@ -237,7 +245,7 @@ let meter = Timer(timeInterval: 1, repeats: true) { _ in
     let line = "mic \(db(engine.micSquares, n)) dB | game \(db(engine.refSquares, n)) dB | out \(db(engine.outSquares, n)) dB | \(engine.processors[0].status())"
     print(line)
     let status = micNote.isEmpty
-        ? "Removing game audio · \(engine.processors[0].latency * 1000 / 48000 + 8) ms\(recovered)"
+        ? "Removing game audio · \(engine.processors[0].latency * 1000 / 48000 + 8) ms\(lastRoomDelay > 0 ? " · room \(lastRoomDelay) ms" : "")\(recovered)"
         : micNote
     menuBar.update(status: status, healthy: micNote.isEmpty)
     if ticks % 10 == 0 { Log.write(line, echo: false) }

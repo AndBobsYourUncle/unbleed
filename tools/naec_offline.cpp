@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
     size_t hops = std::min(mic.size(), ref.size()) / hop;
     std::vector<float> out(hops * hop);
     for (size_t k = 0; k < hops; k++) naec_process(aec, &mic[k * hop], &ref[k * hop], &out[k * hop]);
+    fprintf(stderr, "speaker→mic delay: %.1f ms\n", naec_acoustic_delay_ms(aec));
     naec_destroy(aec);
     FILE *f = fopen(argv[4], "wb");
     fwrite(out.data() + lat, sizeof(float), out.size() - lat, f);

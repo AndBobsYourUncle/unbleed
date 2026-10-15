@@ -12,7 +12,7 @@ typedef struct NeuralAec NeuralAec;
 typedef struct {
     int high_band;          // 0: DTLN only (no content above 8 kHz), 1: steered, 2: steered + reference-aware
     float steer_power;      // >1 closes the high band harder when DTLN suppresses (2 tested best)
-    float acoustic_delay_ms;// speaker -> mic delay, for lining up the reference in the high band (~80)
+    float acoustic_delay_ms;// starting speaker -> mic delay for the high band; measured and refined live
 } NaecOptions;
 
 // model_prefix: path without the "_1.onnx"/"_2.onnx" suffix. Returns NULL and fills `error` on failure.
@@ -24,6 +24,9 @@ int naec_latency(const NeuralAec *aec);   // output delay in samples, excluding 
 
 // One hop of mic + system audio in, one hop of cleaned mic out.
 void naec_process(NeuralAec *aec, const float *mic, const float *ref, float *out);
+
+// Speaker -> mic delay currently used for the high band: measured live, saved with the state.
+float naec_acoustic_delay_ms(const NeuralAec *aec);
 
 // Learned state (DTLN memory, speaker coupling) so the next session starts settled.
 int naec_save_state(const NeuralAec *aec, const char *path);

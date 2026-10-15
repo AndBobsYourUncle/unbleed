@@ -316,13 +316,112 @@ std::vector<float> bandpass(double lo, double hi) {
     return a;
 }
 
+// A delay line whose length can change while running (the measured speaker→mic delay moves it).
+class VariableDelay {
+public:
+    explicit VariableDelay(int max_samples) : buf_(max_samples + 1, 0.f) {}
+    void set(int samples) { delay_ = std::clamp(samples, 0, int(buf_.size()) - 1); }
+    int get() const { return delay_; }
+    float process(float x) {
+        buf_[pos_] = x;
+        float y = buf_[(pos_ + buf_.size() - delay_) % buf_.size()];
+        pos_ = (pos_ + 1) % buf_.size();
+        return y;
+    }
+private:
+    std::vector<float> buf_;
+    size_t pos_ = 0;
+    int delay_ = 0;
+};
+
+// Measures how long the game audio takes from the speakers to the mic, by cross-correlating the two
+// at 8 kHz over the last ~2 s (via FFT), once a second. Only trusts clear peaks while the game is
+// playing, and takes the median of recent measurements, so talking or silence can't throw it off.
+class AcousticDelayEstimator {
+public:
+    static constexpr int kDecim = 6;               // 48 kHz -> 8 kHz
+    static constexpr int kWindow = 16384;           // ~2 s at 8 kHz
+    static constexpr int kFft = 32768;              // zero-padded: no circular wrap-around
+    static constexpr int kMaxLag = 8000 * 300 / 1000;  // search 0-300 ms
+
+    AcousticDelayEstimator() : fft_(kFft), mic_(kWindow), ref_(kWindow), a_(kFft), b_(kFft),
+                               ar_(kFft / 2 + 1), ai_(kFft / 2 + 1), br_(kFft / 2 + 1), bi_(kFft / 2 + 1) {}
+
+    /// Feed one 48 kHz sample pair; returns true when a new estimate was accepted.
+    bool push(float mic, float ref) {
+        float m = lp_mic_.process(mic), r = lp_ref_.process(ref);
+        if (++phase_ < kDecim) return false;
+        phase_ = 0;
+        mic_[pos_] = m;
+        ref_[pos_] = r;
+        pos_ = (pos_ + 1) % kWindow;
+        filled_ = std::min(filled_ + 1, kWindow);
+        if (++since_ < 8000 || filled_ < kWindow) return false;  // once a second, on a full window
+        since_ = 0;
+        return estimate();
+    }
+
+    /// Accepted delay in 48 kHz samples, or -1 before the first confident measurement.
+    int delay48() const { return accepted_ < 0 ? -1 : accepted_ * kDecim; }
+    float last_confidence() const { return confidence_; }
+
+private:
+    bool estimate() {
+        // unroll the rings oldest-first into zero-padded buffers
+        double em = 0, er = 0;
+        for (int i = 0; i < kFft; i++) {
+            float m = 0, r = 0;
+            if (i < kWindow) {
+                m = mic_[(pos_ + i) % kWindow];
+                r = ref_[(pos_ + i) % kWindow];
+            }
+            a_[i] = m; b_[i] = r;
+            em += m * m; er += r * r;
+        }
+        if (er / kWindow < 1e-6 || em / kWindow < 1e-9) return false;  // game silent (< -60 dB) or mic dead
+        fft_.forward(a_.data(), ar_.data(), ai_.data());
+        fft_.forward(b_.data(), br_.data(), bi_.data());
+        for (int k = 0; k <= kFft / 2; k++) {  // mic · conj(ref): correlation of mic lagging ref
+            float re = ar_[k] * br_[k] + ai_[k] * bi_[k], im = ai_[k] * br_[k] - ar_[k] * bi_[k];
+            ar_[k] = re; ai_[k] = im;
+        }
+        fft_.inverse(ar_.data(), ai_.data(), a_.data());
+        int best = 0;
+        float peak = 0;
+        for (int lag = 0; lag <= kMaxLag; lag++) {
+            if (std::fabs(a_[lag]) > peak) { peak = std::fabs(a_[lag]); best = lag; }
+        }
+        confidence_ = float(peak / std::sqrt(em * er));
+        if (confidence_ < 0.2f) return false;
+
+        history_[hcount_++ % kHistory] = best;
+        int n = std::min(hcount_, kHistory);
+        int sorted[kHistory];
+        std::copy(history_, history_ + n, sorted);
+        std::sort(sorted, sorted + n);
+        int median = sorted[n / 2];
+        if (n < 3 || std::abs(median - accepted_) < 16) return false;  // need agreement; ignore < 2 ms jitter
+        accepted_ = median;
+        return true;
+    }
+
+    static constexpr int kHistory = 9;
+    RealFft fft_;
+    Fir lp_mic_{lowpass(63, 3500, false)}, lp_ref_{lowpass(63, 3500, false)};
+    std::vector<float> mic_, ref_, a_, b_, ar_, ai_, br_, bi_;
+    int pos_ = 0, filled_ = 0, phase_ = 0, since_ = 0;
+    int history_[kHistory] = {};
+    int hcount_ = 0, accepted_ = -1;
+    float confidence_ = 0;
+};
+
 }  // namespace
 
 // ---------- full pipeline ----------
 
 struct NeuralAec {
     NaecOptions opt;
-    Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "stream-audio"};
+    Ort::Env env{ORT_LOGGING_LEVEL_WARNING, "unbleed"};
     std::unique_ptr<Dtln> dtln;
     HighBandGate gate;
 
@@ -334,7 +433,10 @@ struct NeuralAec {
     // Everything the high band uses is delayed to line up with DTLN's output.
     static constexpr int kLowDelay = 2 * (kResampleTaps / 2) + 3 * Dtln::kLatency16;  // 60 + 1152
     DelayLine mic_delay{kLowDelay};
-    DelayLine ref_delay{0};
+    // reference for the high-band gate: same pipeline delay as the mic, plus the speaker→mic delay
+    VariableDelay ref_delay{kLowDelay + kRate / 2};
+    AcousticDelayEstimator delay_estimator;
+    float acoustic_ms = 0;
     Fir lp{lowpass(kCrossTaps, 7500, false)};
     Fir hp_mic{highpass_complement(lowpass(kCrossTaps, 7500, false))};
     Fir hp_ref{highpass_complement(lowpass(kCrossTaps, 7500, false))};
@@ -351,8 +453,8 @@ extern "C" NeuralAec *naec_create(const char *model_prefix, NaecOptions options,
         auto aec = std::make_unique<NeuralAec>();
         aec->opt = options;
         aec->dtln = std::make_unique<Dtln>(aec->env, model_prefix);
-        int acoustic = int(options.acoustic_delay_ms * kRate / 1000);
-        aec->ref_delay = DelayLine(NeuralAec::kLowDelay + acoustic);
+        aec->acoustic_ms = options.acoustic_delay_ms;
+        aec->ref_delay.set(NeuralAec::kLowDelay + int(options.acoustic_delay_ms * kRate / 1000));
         return aec.release();
     } catch (const std::exception &e) {
         if (error && error_len > 0) snprintf(error, error_len, "%s", e.what());
@@ -394,6 +496,11 @@ extern "C" void naec_process(NeuralAec *a, const float *mic, const float *ref, f
     float lo[kHop], hf[kHop], hf_ref[kHop];
     double e_in = 1e-10, e_out = 1e-10;
     for (int i = 0; i < kHop; i++) {
+        if (a->delay_estimator.push(mic[i], ref[i])) {
+            int d = a->delay_estimator.delay48();
+            a->acoustic_ms = d * 1000.f / kRate;
+            a->ref_delay.set(NeuralAec::kLowDelay + d);
+        }
         float md = a->mic_delay.process(mic[i]);
         lo[i] = a->lp.process(low[i]);
         hf[i] = a->hp_mic.process(md);
@@ -421,7 +528,8 @@ extern "C" void naec_process(NeuralAec *a, const float *mic, const float *ref, f
 }
 
 namespace {
-constexpr char kMagic[8] = {'N', 'A', 'E', 'C', 'S', 'T', '0', '1'};
+constexpr char kMagic[8] = {'N', 'A', 'E', 'C', 'S', 'T', '0', '2'};  // 02 adds the speaker→mic delay
+constexpr char kMagicV1[8] = {'N', 'A', 'E', 'C', 'S', 'T', '0', '1'};
 }
 
 extern "C" int naec_save_state(const NeuralAec *a, const char *path) {
@@ -431,6 +539,7 @@ extern "C" int naec_save_state(const NeuralAec *a, const char *path) {
     fwrite(a->dtln->state1_, sizeof(float), kStateSize, f);
     fwrite(a->dtln->state2_, sizeof(float), kStateSize, f);
     fwrite(a->gate.coupling_, sizeof(float), kStftBins, f);
+    fwrite(&a->acoustic_ms, sizeof(float), 1, f);
     fclose(f);
     return 0;
 }
@@ -439,11 +548,20 @@ extern "C" int naec_load_state(NeuralAec *a, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
     char magic[8];
-    bool ok = fread(magic, 1, 8, f) == 8 && std::memcmp(magic, kMagic, 8) == 0 &&
+    bool v2 = false;
+    bool ok = fread(magic, 1, 8, f) == 8 &&
+              ((v2 = std::memcmp(magic, kMagic, 8) == 0) || std::memcmp(magic, kMagicV1, 8) == 0) &&
               fread(a->dtln->state1_, sizeof(float), kStateSize, f) == size_t(kStateSize) &&
               fread(a->dtln->state2_, sizeof(float), kStateSize, f) == size_t(kStateSize) &&
               fread(a->gate.coupling_, sizeof(float), kStftBins, f) == size_t(kStftBins);
+    float saved_ms = 0;
+    if (ok && v2 && fread(&saved_ms, sizeof(float), 1, f) == 1 && saved_ms > 0 && saved_ms < 500) {
+        a->acoustic_ms = saved_ms;  // start from last session's measured room delay
+        a->ref_delay.set(NeuralAec::kLowDelay + int(saved_ms * kRate / 1000));
+    }
     fclose(f);
     if (!ok) a->dtln->reset();
     return ok ? 0 : -1;
 }
+
+extern "C" float naec_acoustic_delay_ms(const NeuralAec *a) { return a->acoustic_ms; }
