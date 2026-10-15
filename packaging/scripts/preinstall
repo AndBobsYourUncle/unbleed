@@ -1,0 +1,22 @@
+#!/bin/sh
+# Before the drivers are replaced: remember what's needed to make the install seamless.
+STATE=/tmp/unbleed-install
+rm -rf "$STATE" && mkdir -p "$STATE"
+HAL="/Library/Audio/Plug-Ins/HAL"
+
+# fingerprint of the installed drivers, so postinstall can skip the audio restart if they didn't change.
+# CDHash covers the code itself (not the signature's timestamp), so identical drivers match across releases.
+for d in "Unbleed Mic" "Unbleed Desktop"; do
+    codesign -dv --verbose=4 "$HAL/$d.driver" 2>&1 | grep '^CDHash='
+done > "$STATE/drivers-before"
+
+# the user's default output/input/system-sound devices, to put back after an audio restart
+"$(dirname "$0")/audiodefaults" save "$STATE/defaults" 2>/dev/null
+
+# quit a running Unbleed cleanly (it saves its learned state) and remember to start it again
+if pgrep -f "Unbleed.app/Contents/MacOS/unbleed" >/dev/null; then
+    touch "$STATE/relaunch"
+    pkill -INT -f "Unbleed.app/Contents/MacOS/unbleed"
+    sleep 1
+fi
+exit 0

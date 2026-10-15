@@ -25,7 +25,7 @@ for f in build/Unbleed.app build/drivers/*.driver; do
 done
 
 echo "▸ packaging"
-packaging/make_pkg.sh | grep "^built"
+RELEASE=1 packaging/make_pkg.sh | grep "^built"
 productsign --sign "$INSTALLER_ID" --timestamp $PKG $PKG.signed >/dev/null
 mv $PKG.signed $PKG
 [[ $(pkgutil --check-signature $PKG) == *"issued by Apple for distribution"* ]] || { echo "package signing failed" >&2; exit 1 }

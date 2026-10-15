@@ -32,10 +32,21 @@ nonrelocatable() {
 nonrelocatable $WORK/app-root $WORK/app.plist
 nonrelocatable $WORK/driver-root $WORK/drivers.plist
 
+# Installer scripts. The app installs first, then the drivers, so "before" runs with the app package
+# (quit Unbleed, remember devices + driver fingerprints) and "after" with the drivers package (restart
+# Core Audio only if needed, restore the user's devices, relaunch). Both get the signed helper.
+swiftc -O packaging/audiodefaults.swift -o $WORK/audiodefaults
+SIGN_ID=$(security find-identity -v -p codesigning | grep -oE '"Developer ID Application[^"]*"' | head -1 | tr -d '"')
+codesign --force --options runtime ${RELEASE:+--timestamp} --sign "${SIGN_ID:--}" $WORK/audiodefaults 2>/dev/null
+mkdir -p $WORK/app-scripts $WORK/driver-scripts
+cp packaging/scripts/preinstall $WORK/audiodefaults $WORK/app-scripts/
+cp packaging/scripts/postinstall $WORK/audiodefaults $WORK/driver-scripts/
+
 pkgbuild --root $WORK/app-root --component-plist $WORK/app.plist --install-location /Applications \
-    --identifier dev.unbleed.app.pkg --version $VERSION $WORK/UnbleedApp.pkg >/dev/null 2>&1
+    --scripts $WORK/app-scripts --identifier dev.unbleed.app.pkg --version $VERSION $WORK/UnbleedApp.pkg >/dev/null 2>&1
+
 pkgbuild --root $WORK/driver-root --component-plist $WORK/drivers.plist \
-    --install-location /Library/Audio/Plug-Ins/HAL --scripts packaging/scripts \
+    --install-location /Library/Audio/Plug-Ins/HAL --scripts $WORK/driver-scripts \
     --identifier dev.unbleed.drivers.pkg --version $VERSION $WORK/UnbleedDrivers.pkg >/dev/null 2>&1
 
 # pkgbuild archives that protected attribute as AppleDouble "._" entries no matter what, and those would

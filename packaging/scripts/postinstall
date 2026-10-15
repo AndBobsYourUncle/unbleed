@@ -1,4 +1,25 @@
 #!/bin/sh
-# Restart Core Audio so the Unbleed Mic / Unbleed Desktop devices load (audio pauses for a moment).
-launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null || killall coreaudiod 2>/dev/null
+# Load the Unbleed Mic / Unbleed Desktop devices without disturbing the rest of the user's audio.
+STATE=/tmp/unbleed-install
+HAL="/Library/Audio/Plug-Ins/HAL"
+
+for d in "Unbleed Mic" "Unbleed Desktop"; do
+    codesign -dv --verbose=4 "$HAL/$d.driver" 2>&1 | grep '^CDHash='
+done > "$STATE/drivers-after"
+
+# Core Audio only needs a restart when the drivers are new or changed. A plain reinstall skips it.
+if ! cmp -s "$STATE/drivers-before" "$STATE/drivers-after"; then
+    launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null || killall coreaudiod 2>/dev/null
+    # macOS picks whichever device returns first (often the built-in speakers); put the user's back
+    "$(dirname "$0")/audiodefaults" restore "$STATE/defaults" 20 2>/dev/null
+fi
+
+# start Unbleed again if it was running before, as the logged-in user
+if [ -f "$STATE/relaunch" ]; then
+    user=$(stat -f %Su /dev/console)
+    uid=$(id -u "$user" 2>/dev/null)
+    [ -n "$uid" ] && launchctl asuser "$uid" sudo -u "$user" open -a /Applications/Unbleed.app
+fi
+
+rm -rf "$STATE"
 exit 0
