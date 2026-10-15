@@ -151,4 +151,12 @@ sudo packaging/uninstall.sh   # removes the app and both devices; keeps settings
 - The virtual devices are built from the [BlackHole](https://github.com/ExistentialAudio/BlackHole)
   source (GPL-3.0), renamed as its license requires. Unbleed isn't affiliated with Existential Audio.
 
-Made by [AndBobsYourUncle](https://github.com/AndBobsYourUncle).
+## License
+
+Copyright © 2026 Nicholas Page ([AndBobsYourUncle](https://github.com/AndBobsYourUncle)).
+
+Unbleed is free software: you can redistribute it and/or modify it under the terms of the
+[GNU General Public License v3.0](LICENSE) as published by the Free Software Foundation. It comes
+with no warranty.
+
+Third-party components keep their own licenses (MIT, BSD and GPL-3.0); see [`licenses/`](licenses).

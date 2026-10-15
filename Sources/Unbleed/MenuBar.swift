@@ -158,6 +158,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
         credits.append(line("Echo removal: DTLN-aec (MIT)", size: 10, color: .secondaryLabelColor))
         credits.append(line("and WebRTC AEC3 (BSD)", size: 10, color: .secondaryLabelColor))
         credits.append(line("Virtual devices: BlackHole source (GPL-3.0)", size: 10, color: .secondaryLabelColor))
+        credits.append(line("", size: 6, color: .labelColor))
+        credits.append(line("Free software under the GNU GPL v3.0", size: 10, color: .secondaryLabelColor))
         NSApp.activate()
         NSApp.orderFrontStandardAboutPanel(options: [
             .applicationName: Brand.name, .applicationVersion: Brand.version, .version: "", .credits: credits,

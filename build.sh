@@ -44,7 +44,8 @@ cp Resources/Info.plist $APP/Contents/Info.plist
 mkdir -p $APP/Contents/Resources/models
 cp models/*.onnx $APP/Contents/Resources/models/
 cp $BUILD/branding/Unbleed.icns $BUILD/branding/MenuBarIcon.png $BUILD/branding/MenuBarIcon@2x.png $APP/Contents/Resources/
-mkdir -p $APP/Contents/Resources/Licenses
+rm -rf $APP/Contents/Resources/Licenses && mkdir -p $APP/Contents/Resources/Licenses
+cp LICENSE $APP/Contents/Resources/Licenses/Unbleed-GPL-3.0.txt
 cp licenses/DTLN-aec-MIT.txt $APP/Contents/Resources/Licenses/
 cp licenses/webrtc-audio-processing-BSD.txt $APP/Contents/Resources/Licenses/
 cp licenses/BlackHole-GPL-3.0.txt $APP/Contents/Resources/Licenses/
