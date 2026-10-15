@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -334,9 +335,10 @@ private:
     int delay_ = 0;
 };
 
-// Measures how long the game audio takes from the speakers to the mic, by cross-correlating the two
-// at 8 kHz over the last ~2 s (via FFT), once a second. Only trusts clear peaks while the game is
-// playing, and takes the median of recent measurements, so talking or silence can't throw it off.
+// Measures how long the game audio takes from the speakers to the mic: GCC-PHAT cross-correlation at
+// 8 kHz over the last ~2 s, once a second. A window only counts if the game was playing, you weren't
+// talking (DTLN's own verdict), and the peak is clearly unique — repetitive game audio (music loops,
+// beats) otherwise produces several similar peaks. The median of recent measurements is used.
 class AcousticDelayEstimator {
 public:
     static constexpr int kDecim = 6;               // 48 kHz -> 8 kHz
@@ -347,6 +349,9 @@ public:
     AcousticDelayEstimator() : fft_(kFft), mic_(kWindow), ref_(kWindow), a_(kFft), b_(kFft),
                                ar_(kFft / 2 + 1), ai_(kFft / 2 + 1), br_(kFft / 2 + 1), bi_(kFft / 2 + 1) {}
 
+    /// Near-end speech was detected: windows containing it are skipped.
+    void talking() { quiet_ = 0; }
+
     /// Feed one 48 kHz sample pair; returns true when a new estimate was accepted.
     bool push(float mic, float ref) {
         float m = lp_mic_.process(mic), r = lp_ref_.process(ref);
@@ -356,7 +361,9 @@ public:
         ref_[pos_] = r;
         pos_ = (pos_ + 1) % kWindow;
         filled_ = std::min(filled_ + 1, kWindow);
+        quiet_ = std::min(quiet_ + 1, kWindow);
         if (++since_ < 8000 || filled_ < kWindow) return false;  // once a second, on a full window
+        if (quiet_ < kWindow) { since_ = 0; return false; }      // you talked during this window
         since_ = 0;
         return estimate();
     }
@@ -381,18 +388,30 @@ private:
         if (er / kWindow < 1e-6 || em / kWindow < 1e-9) return false;  // game silent (< -60 dB) or mic dead
         fft_.forward(a_.data(), ar_.data(), ai_.data());
         fft_.forward(b_.data(), br_.data(), bi_.data());
-        for (int k = 0; k <= kFft / 2; k++) {  // mic · conj(ref): correlation of mic lagging ref
+        // GCC-PHAT: mic · conj(ref) with the magnitude divided out, so every frequency votes equally and
+        // the true arrival becomes a sharp spike. Only 150-3400 Hz votes (where both signals have energy).
+        const int lo = 150 * kFft / 8000, hi = 3400 * kFft / 8000;
+        for (int k = 0; k <= kFft / 2; k++) {
             float re = ar_[k] * br_[k] + ai_[k] * bi_[k], im = ai_[k] * br_[k] - ar_[k] * bi_[k];
-            ar_[k] = re; ai_[k] = im;
+            float mag = std::sqrt(re * re + im * im);
+            bool use = k >= lo && k <= hi && mag > 1e-12f;
+            ar_[k] = use ? re / mag : 0; ai_[k] = use ? im / mag : 0;
         }
         fft_.inverse(ar_.data(), ai_.data(), a_.data());
         int best = 0;
-        float peak = 0;
+        float peak = 0, mean = 0;
         for (int lag = 0; lag <= kMaxLag; lag++) {
-            if (std::fabs(a_[lag]) > peak) { peak = std::fabs(a_[lag]); best = lag; }
+            float v = std::fabs(a_[lag]);
+            mean += v;
+            if (v > peak) { peak = v; best = lag; }
         }
-        confidence_ = float(peak / std::sqrt(em * er));
-        if (confidence_ < 0.2f) return false;
+        mean /= kMaxLag + 1;
+        float rival = 0;  // strongest peak at least 3 ms away from the best one
+        for (int lag = 0; lag <= kMaxLag; lag++) {
+            if (std::abs(lag - best) > 24) rival = std::max(rival, std::fabs(a_[lag]));
+        }
+        confidence_ = peak / (mean + 1e-12f);
+        if (confidence_ < 8.f || peak < 1.5f * rival) return false;  // weak or ambiguous
 
         history_[hcount_++ % kHistory] = best;
         int n = std::min(hcount_, kHistory);
@@ -400,7 +419,7 @@ private:
         std::copy(history_, history_ + n, sorted);
         std::sort(sorted, sorted + n);
         int median = sorted[n / 2];
-        if (n < 3 || std::abs(median - accepted_) < 16) return false;  // need agreement; ignore < 2 ms jitter
+        if (n < 5 || std::abs(median - accepted_) < 16) return false;  // need agreement; ignore < 2 ms jitter
         accepted_ = median;
         return true;
     }
@@ -409,7 +428,7 @@ private:
     RealFft fft_;
     Fir lp_mic_{lowpass(63, 3500, false)}, lp_ref_{lowpass(63, 3500, false)};
     std::vector<float> mic_, ref_, a_, b_, ar_, ai_, br_, bi_;
-    int pos_ = 0, filled_ = 0, phase_ = 0, since_ = 0;
+    int pos_ = 0, filled_ = 0, phase_ = 0, since_ = 0, quiet_ = 0;
     int history_[kHistory] = {};
     int hcount_ = 0, accepted_ = -1;
     float confidence_ = 0;
@@ -436,6 +455,7 @@ struct NeuralAec {
     // reference for the high-band gate: same pipeline delay as the mic, plus the speaker→mic delay
     VariableDelay ref_delay{kLowDelay + kRate / 2};
     AcousticDelayEstimator delay_estimator;
+    bool fixed_delay = getenv("NAEC_FIXED_DELAY") != nullptr;  // research: hold the starting delay
     float acoustic_ms = 0;
     Fir lp{lowpass(kCrossTaps, 7500, false)};
     Fir hp_mic{highpass_complement(lowpass(kCrossTaps, 7500, false))};
@@ -496,7 +516,7 @@ extern "C" void naec_process(NeuralAec *a, const float *mic, const float *ref, f
     float lo[kHop], hf[kHop], hf_ref[kHop];
     double e_in = 1e-10, e_out = 1e-10;
     for (int i = 0; i < kHop; i++) {
-        if (a->delay_estimator.push(mic[i], ref[i])) {
+        if (!a->fixed_delay && a->delay_estimator.push(mic[i], ref[i])) {
             int d = a->delay_estimator.delay48();
             a->acoustic_ms = d * 1000.f / kRate;
             a->ref_delay.set(NeuralAec::kLowDelay + d);
@@ -509,7 +529,9 @@ extern "C" void naec_process(NeuralAec *a, const float *mic, const float *ref, f
         e_in += bi * bi;
         e_out += bo * bo;
     }
-    float target = std::pow(std::min(float(std::sqrt(e_out / e_in)), 1.f), a->opt.steer_power);
+    float kept = std::min(float(std::sqrt(e_out / e_in)), 1.f);  // how much of the mic DTLN kept
+    if (kept > 0.35f) a->delay_estimator.talking();                // ...a lot: you're speaking
+    float target = std::pow(kept, a->opt.steer_power);
     a->steer_level += (target - a->steer_level) * (target > a->steer_level ? 0.8f : 0.3f);
     for (int i = 0; i < kHop; i++) {
         float g = a->steer_prev + (a->steer_level - a->steer_prev) * (i + 1) / kHop;

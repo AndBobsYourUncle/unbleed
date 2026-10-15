@@ -26,7 +26,12 @@ int main(int argc, char **argv) {
     int hop = naec_hop(), lat = naec_latency(aec);
     size_t hops = std::min(mic.size(), ref.size()) / hop;
     std::vector<float> out(hops * hop);
-    for (size_t k = 0; k < hops; k++) naec_process(aec, &mic[k * hop], &ref[k * hop], &out[k * hop]);
+    // NAEC_TRACE=1 prints the speaker→mic delay estimate once per second (to study its stability)
+    bool trace = getenv("NAEC_TRACE") != nullptr;
+    for (size_t k = 0; k < hops; k++) {
+        naec_process(aec, &mic[k * hop], &ref[k * hop], &out[k * hop]);
+        if (trace && (k * hop) % 48000 < size_t(hop)) fprintf(stderr, "%zu %.1f\n", k * hop / 48000, naec_acoustic_delay_ms(aec));
+    }
     fprintf(stderr, "speaker→mic delay: %.1f ms\n", naec_acoustic_delay_ms(aec));
     naec_destroy(aec);
     FILE *f = fopen(argv[4], "wb");
