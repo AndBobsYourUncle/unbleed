@@ -70,8 +70,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
         menu.addItem(entry)
     }
 
-    func update(status: String, healthy: Bool) {
+    func update(status: String, detail: String = "", healthy: Bool) {
         header.status = status
+        header.detail = detail
         header.healthy = healthy
         setIcon(healthy: healthy)
         item.button?.toolTip = "\(Brand.name) — \(status)"
@@ -176,23 +177,31 @@ private let brandColors = [NSColor(srgbRed: 0.17, green: 0.89, blue: 1, alpha: 1
                            NSColor(srgbRed: 0.61, green: 0.36, blue: 1, alpha: 1),
                            NSColor(srgbRed: 1, green: 0.31, blue: 0.85, alpha: 1)]
 
-/// App icon, name and a status line with a coloured dot.
+/// App icon and name, a status line with a coloured dot, and a detail line (latency, room delay).
 final class HeaderView: NSView {
     var status = "Starting…" { didSet { needsDisplay = true } }
+    var detail = "" { didSet { needsDisplay = true } }
     var healthy = true { didSet { needsDisplay = true } }
 
-    init() { super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 52)) }
+    init() { super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 62)) }
     required init?(coder: NSCoder) { fatalError() }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSApp.applicationIconImage?.draw(in: NSRect(x: 14, y: 8, width: 36, height: 36))
-        (Brand.name as NSString).draw(at: NSPoint(x: 58, y: 26), withAttributes: [
+        NSApp.applicationIconImage?.draw(in: NSRect(x: 14, y: 13, width: 36, height: 36))
+        (Brand.name as NSString).draw(at: NSPoint(x: 58, y: 38), withAttributes: [
             .font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: NSColor.labelColor])
-        let dot = NSRect(x: 59, y: 12, width: 7, height: 7)
         (healthy ? NSColor.systemGreen : NSColor.systemOrange).setFill()
-        NSBezierPath(ovalIn: dot).fill()
-        (status as NSString).draw(at: NSPoint(x: 71, y: 8), withAttributes: [
-            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
+        NSBezierPath(ovalIn: NSRect(x: 59, y: 25, width: 7, height: 7)).fill()
+        // fixed-width lines that truncate with "…" rather than run past the menu edge
+        let truncating = NSMutableParagraphStyle()
+        truncating.lineBreakMode = .byTruncatingTail
+        let width = bounds.width - 71 - 14
+        (status as NSString).draw(in: NSRect(x: 71, y: 21, width: width, height: 15), withAttributes: [
+            .font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: truncating])
+        (detail as NSString).draw(in: NSRect(x: 71, y: 6, width: width, height: 15), withAttributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular),
+            .foregroundColor: NSColor.tertiaryLabelColor, .paragraphStyle: truncating])
     }
 }
 

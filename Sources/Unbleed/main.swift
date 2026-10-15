@@ -244,10 +244,11 @@ let meter = Timer(timeInterval: 1, repeats: true) { _ in
     }
     let line = "mic \(db(engine.micSquares, n)) dB | game \(db(engine.refSquares, n)) dB | out \(db(engine.outSquares, n)) dB | \(engine.processors[0].status())"
     print(line)
-    let status = micNote.isEmpty
-        ? "Removing game audio · \(engine.processors[0].latency * 1000 / 48000 + 8) ms\(lastRoomDelay > 0 ? " · room \(lastRoomDelay) ms" : "")\(recovered)"
-        : micNote
-    menuBar.update(status: status, healthy: micNote.isEmpty)
+    var detail = "Latency \(engine.processors[0].latency * 1000 / 48000 + 8) ms"
+    if lastRoomDelay > 0 { detail += " · Room \(lastRoomDelay) ms" }
+    detail += recovered
+    menuBar.update(status: micNote.isEmpty ? "Removing game audio" : micNote, detail: detail,
+                   healthy: micNote.isEmpty)
     if ticks % 10 == 0 { Log.write(line, echo: false) }
     engine.micSquares = 0; engine.refSquares = 0; engine.outSquares = 0; engine.meterSamples = 0
     if let duration, Date().timeIntervalSince(started) >= duration { shutdown() }
