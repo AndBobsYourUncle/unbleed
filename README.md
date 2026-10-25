@@ -30,7 +30,7 @@ in sync with each other.
 
 ## Install
 
-1. Open **`Unbleed-1.0.pkg`**. It installs the app into `/Applications` and the two audio devices
+1. Open **`Unbleed-1.1.pkg`**. It installs the app into `/Applications` and the two audio devices
    into `/Library/Audio/Plug-Ins/HAL`. Audio pauses for a moment at the end.
 2. Open **Unbleed** and allow microphone and system-audio access. A waveform icon appears in your
    menu bar.
