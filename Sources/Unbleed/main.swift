@@ -17,6 +17,7 @@ usage: unbleed [options]
                         in sync with the cleaned mic, e.g. "Unbleed Desktop"
   --engine NAME         neural or webrtc                       default: neural
   --delay MS            starting speaker-to-mic delay (then measured live)  default: 80
+  --off                 start switched off; turn it on from the menu (the menu saves this choice)
 
  neural engine:
   --high-band MODE      above 8 kHz: refaware, steered, or none (DTLN only)   default: refaware
@@ -58,7 +59,7 @@ var options: [String: String] = [:]
 var argv = launchedWithoutArguments ? ArraySlice(LaunchConfig.arguments()) : CommandLine.arguments.dropFirst()
 while let arg = argv.popFirst() {
     switch arg {
-    case "--list-devices", "-h", "--help", "--no-state", "--compare": options[arg] = ""
+    case "--list-devices", "-h", "--help", "--no-state", "--compare", "--off": options[arg] = ""
     case "--mic", "--mic-channel", "--output", "--suppression", "--noise", "--delay", "--record", "--duration",
          "--engine", "--high-band", "--model", "--state", "--desktop-output":
         guard let value = argv.popFirst() else { fail("\(arg) needs a value") }
@@ -167,24 +168,25 @@ do {
         processors = try suppression.map { try webrtc($0.name, $0.transparency) }
     }
     supervisor = try Supervisor(mic: mic, output: output, desktopOutput: desktopOutput, micChannel: micChannel,
-                                processors: processors, recordSeconds: duration)
+                                processors: processors, recordSeconds: duration, on: options["--off"] == nil)
 } catch {
     fail("\(error)")
 }
-var engine: Engine { supervisor.engine }
-var device: CaptureDevice { supervisor.device }
 
 Log.write("started: mic \(mic.name), output \(output?.name ?? "none"), desktop \(desktopOutput?.name ?? "none"), "
-          + "processing \(supervisor.processors.map(\.name).joined(separator: ", "))", echo: false)
+          + "processing \(supervisor.processors.map(\.name).joined(separator: ", "))"
+          + (supervisor.isOn ? "" : ", switched off"), echo: false)
 
-print("mic: \(mic.name) (channel \(micChannel)), output: \(output?.name ?? "none"), \(Int(device.sampleRate)) Hz")
-if let desktopOutput {
-    print("desktop mix -> \(desktopOutput.name), delayed \(engine.desktopDelay * 1000 / Int(device.sampleRate)) ms to match the mic")
+if let engine = supervisor.engine, let device = supervisor.device {
+    print("mic: \(mic.name) (channel \(micChannel)), output: \(output?.name ?? "none"), \(Int(device.sampleRate)) Hz")
+    if let desktopOutput {
+        print("desktop mix -> \(desktopOutput.name), delayed \(engine.desktopDelay * 1000 / Int(device.sampleRate)) ms to match the mic")
+    }
 }
-print("processing: \(engine.processors.map(\.name).joined(separator: ", "))")
-print("running — ctrl-c to stop (log: \(Log.path))")
+print("processing: \(supervisor.processors.map(\.name).joined(separator: ", "))")
+print(supervisor.isOn ? "running — ctrl-c to stop (log: \(Log.path))" : "switched off — turn it on from the menu bar")
 
-func db(_ squares: Double, _ n: Int) -> String {
+@Sendable func db(_ squares: Double, _ n: Int) -> String {
     String(format: "%6.1f", 10 * log10(squares / Double(max(n, 1)) + 1e-12))
 }
 
@@ -195,6 +197,8 @@ NSApplication.shared.setActivationPolicy(.accessory)
 let routing = "\(mic.name) → \(output?.name ?? "no output")"
 let menuBar = MenuBar(
     routing: routing,
+    isOn: { supervisor.isOn },
+    onToggle: { toggleOnOff() },
     currentMic: { supervisor.micUID },
     onSelectMic: { mic in
         var addr = address(kAudioDevicePropertyNominalSampleRate)
@@ -217,16 +221,55 @@ let menuBar = MenuBar(
     },
     readLevels: {
         func level(_ squares: Double, _ n: Int) -> Float { n == 0 ? -120 : Float(10 * log10(squares / Double(n) + 1e-12)) }
-        let e = engine
+        guard let e = supervisor.engine else { return Levels() }
         let l = Levels(mic: level(e.uiMic, e.uiSamples), game: level(e.uiRef, e.uiSamples), out: level(e.uiOut, e.uiSamples))
         e.uiMic = 0; e.uiRef = 0; e.uiOut = 0; e.uiSamples = 0
         return l
     },
     onQuit: { shutdown() })
 
+/// The menu's on/off switch (also SIGUSR2). Remembered for the next launch from Finder or Login Items.
+func toggleOnOff() {
+    if supervisor.isOn {
+        supervisor.turnOff()
+        Log.write("switched off")
+    } else {
+        // launched while the saved mic was missing: use it if it's back now
+        if !micNote.isEmpty, let name = options["--mic"], let saved = AudioDevice.find(name, input: true) {
+            supervisor.useMic(saved)
+            micNote = ""
+        }
+        do {
+            try supervisor.turnOn()
+            Log.write("switched on")
+        } catch {
+            Log.write("couldn't switch on: \(error)")
+            let alert = NSAlert()
+            alert.messageText = "\(Brand.name) couldn't start"
+            alert.informativeText = "\(error)"
+            NSApp.activate()
+            alert.runModal()
+        }
+    }
+    if supervisor.isOn { menuBar.update(status: "Starting…", healthy: true) } else { updateMenu() }
+    if launchedWithoutArguments { LaunchConfig.setFlag("--off", !supervisor.isOn) }
+}
+
 let meter = Timer(timeInterval: 1, repeats: true) { _ in
     supervisor.tick()
     ticks += 1
+    updateMenu()
+    if let duration, Date().timeIntervalSince(started) >= duration { shutdown() }
+}
+RunLoop.main.add(meter, forMode: .common)
+if !supervisor.isOn { updateMenu() }
+
+/// Once a second (and right after switching on or off): status line, detail line, terminal and log.
+func updateMenu() {
+    guard let engine = supervisor.engine else {
+        menuBar.update(status: "Off", detail: "Turn on when you start streaming", healthy: true)
+        return
+    }
     let n = engine.meterSamples
     if let neural = engine.processors.first as? NeuralProcessor {
         let room = Int(neural.acousticDelayMs.rounded())
@@ -239,7 +282,6 @@ let meter = Timer(timeInterval: 1, repeats: true) { _ in
     if n == 0 {
         menuBar.update(status: "Waiting for audio — is the mic on?\(recovered)", healthy: false)
         print("no audio arriving yet (is the mic on?) | \(engine.processors[0].status())")
-        if let duration, Date().timeIntervalSince(started) >= duration { shutdown() }
         return
     }
     let line = "mic \(db(engine.micSquares, n)) dB | game \(db(engine.refSquares, n)) dB | out \(db(engine.outSquares, n)) dB | \(engine.processors[0].status())"
@@ -251,12 +293,11 @@ let meter = Timer(timeInterval: 1, repeats: true) { _ in
                    healthy: micNote.isEmpty)
     if ticks % 10 == 0 { Log.write(line, echo: false) }
     engine.micSquares = 0; engine.refSquares = 0; engine.outSquares = 0; engine.meterSamples = 0
-    if let duration, Date().timeIntervalSince(started) >= duration { shutdown() }
 }
-RunLoop.main.add(meter, forMode: .common)
 
 @Sendable func writeRecording(to path: String) {
-    guard let samples = engine.recording, engine.recorded > 0 else { return }
+    guard let engine = supervisor.engine, let device = supervisor.device,
+          let samples = engine.recording, engine.recorded > 0 else { return }
     let channels = engine.recordChannels
     // More than two channels needs an explicit layout or AVAudioFormat returns nil.
     guard let layout = AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channels)) else { return }
@@ -290,12 +331,17 @@ func shutdown() -> Never {
 }
 
 nonisolated(unsafe) var signalSources: [DispatchSourceSignal] = []
-for sig in [SIGINT, SIGTERM, SIGUSR1] {
+for sig in [SIGINT, SIGTERM, SIGUSR1, SIGUSR2] {
     signal(sig, SIG_IGN)
     let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
-    // SIGUSR1 forces a capture rebuild (pkill -USR1 -f Unbleed.app) — for testing recovery
+    // SIGUSR1 forces a capture rebuild (pkill -USR1 -f Unbleed.app) — for testing recovery;
+    // SIGUSR2 flips the on/off switch, for scripts and hotkeys
     source.setEventHandler {
-        if sig == SIGUSR1 { supervisor.recover("rebuild requested (SIGUSR1)") } else { shutdown() }
+        switch sig {
+        case SIGUSR1: supervisor.recover("rebuild requested (SIGUSR1)")
+        case SIGUSR2: toggleOnOff()
+        default: shutdown()
+        }
     }
     source.resume()
     signalSources.append(source)

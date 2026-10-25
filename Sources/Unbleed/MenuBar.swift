@@ -6,24 +6,32 @@ struct Levels {
     var mic: Float = -120, game: Float = -120, out: Float = -120
 }
 
-/// The menu bar presence: icon, a header with status, live meters, mic picker, login toggle, about, quit.
+/// The menu bar presence: icon, a header with status, an on/off switch, live meters, mic picker, login
+/// toggle, about, quit.
 final class MenuBar: NSObject, NSMenuDelegate {
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
     private let header = HeaderView()
+    private let switchItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let meters = MetersView()
+    private let metersItem = NSMenuItem()
     private let routingLine = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private let micMenu = NSMenu()
     private let loginItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
     private var meterTimer: Timer?
 
+    private let isOn: () -> Bool
+    private let onToggle: () -> Void
     private let currentMic: () -> String
     private let onSelectMic: (AudioDevice) -> Void
     private let readLevels: () -> Levels
     private let onQuit: () -> Void
 
-    init(routing: String, currentMic: @escaping () -> String, onSelectMic: @escaping (AudioDevice) -> Void,
+    init(routing: String, isOn: @escaping () -> Bool, onToggle: @escaping () -> Void,
+         currentMic: @escaping () -> String, onSelectMic: @escaping (AudioDevice) -> Void,
          readLevels: @escaping () -> Levels, onQuit: @escaping () -> Void) {
+        self.isOn = isOn
+        self.onToggle = onToggle
         self.currentMic = currentMic
         self.onSelectMic = onSelectMic
         self.readLevels = readLevels
@@ -37,7 +45,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
         headerItem.view = header
         menu.addItem(headerItem)
         menu.addItem(.separator())
-        let metersItem = NSMenuItem()
+        switchItem.target = self
+        switchItem.action = #selector(toggle)
+        menu.addItem(switchItem)
+        menu.addItem(.separator())
         metersItem.view = meters
         menu.addItem(metersItem)
         routingLine.title = routing
@@ -74,7 +85,9 @@ final class MenuBar: NSObject, NSMenuDelegate {
         header.status = status
         header.detail = detail
         header.healthy = healthy
+        header.on = isOn()
         setIcon(healthy: healthy)
+        item.button?.appearsDisabled = !isOn()  // dimmed icon while switched off
         item.button?.toolTip = "\(Brand.name) — \(status)"
     }
 
@@ -92,6 +105,10 @@ final class MenuBar: NSObject, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         guard menu === self.menu else { return }
         loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        let on = isOn()
+        switchItem.title = on ? "Turn \(Brand.name) Off" : "Turn \(Brand.name) On"
+        switchItem.image = NSImage(systemSymbolName: on ? "stop.circle" : "play.circle", accessibilityDescription: nil)
+        metersItem.isHidden = !on
         _ = readLevels()  // discard what accumulated while closed
         meterTimer = Timer(timeInterval: 1.0 / 15, repeats: true) { [weak self] _ in
             guard let self else { return }
@@ -127,6 +144,8 @@ final class MenuBar: NSObject, NSMenuDelegate {
               let mic = AudioDevice.all().first(where: { $0.uid == uid }) else { return }
         onSelectMic(mic)
     }
+
+    @objc private func toggle() { onToggle() }
 
     @objc private func toggleLogin() {
         do {
@@ -182,6 +201,7 @@ final class HeaderView: NSView {
     var status = "Starting…" { didSet { needsDisplay = true } }
     var detail = "" { didSet { needsDisplay = true } }
     var healthy = true { didSet { needsDisplay = true } }
+    var on = true { didSet { needsDisplay = true } }
 
     init() { super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 62)) }
     required init?(coder: NSCoder) { fatalError() }
@@ -190,7 +210,7 @@ final class HeaderView: NSView {
         NSApp.applicationIconImage?.draw(in: NSRect(x: 14, y: 13, width: 36, height: 36))
         (Brand.name as NSString).draw(at: NSPoint(x: 58, y: 38), withAttributes: [
             .font: NSFont.systemFont(ofSize: 14, weight: .semibold), .foregroundColor: NSColor.labelColor])
-        (healthy ? NSColor.systemGreen : NSColor.systemOrange).setFill()
+        (!on ? NSColor.tertiaryLabelColor : healthy ? NSColor.systemGreen : NSColor.systemOrange).setFill()
         NSBezierPath(ovalIn: NSRect(x: 59, y: 25, width: 7, height: 7)).fill()
         // fixed-width lines that truncate with "…" rather than run past the menu edge
         let truncating = NSMutableParagraphStyle()
@@ -249,6 +269,13 @@ enum LaunchConfig {
     static let path = Brand.configPath
     static let standard = ["--output", Brand.micDevice, "--desktop-output", Brand.desktopDevice]
     private static let header = "# \(Brand.name) options used when launched from Finder/Dock/Login Items, one per line\n"
+
+    /// Add or remove a flag that takes no value, e.g. setFlag("--off", true).
+    static func setFlag(_ flag: String, _ present: Bool) {
+        var lines = arguments().filter { $0 != flag }
+        if present { lines.append(flag) }
+        write(lines)
+    }
 
     /// Set (or replace) one option in the config file, e.g. setOption("--mic", "Wireless microphone").
     static func setOption(_ option: String, _ value: String) {

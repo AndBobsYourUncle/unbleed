@@ -58,6 +58,11 @@ The menu bar icon shows status and live levels (mic in, game, voice out), and ha
 **Launch at Login**, the log and Quit. It turns ⚠️ if no audio is arriving, for example when your mic is
 switched off.
 
+**Turn Unbleed Off** releases the mic and system audio and uses no CPU; *Unbleed Mic* and
+*Unbleed Desktop* go silent until you turn it back on. Unbleed remembers the choice, so with
+**Launch at Login** it can sit switched off in the menu bar until you start streaming. Scripts and
+hotkeys can flip the switch too: `pkill -USR2 -f Unbleed.app`.
+
 Launched from Finder, the Dock or Login Items, Unbleed reads its options from
 `~/Library/Application Support/Unbleed/config`, one per line. From a terminal, the same options
 work as flags:

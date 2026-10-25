@@ -25,8 +25,9 @@ enum Log {
 }
 
 /// Owns the capture setup and rebuilds it when the audio system changes underneath it (sample-rate
-/// switches, default output changes, devices disappearing) or when audio stops arriving. Processors
-/// are kept across rebuilds, so the canceller doesn't have to re-learn.
+/// switches, default output changes, devices disappearing) or when audio stops arriving. It can also be
+/// switched off, which releases the mic, the tap and the virtual outputs. Processors are kept across
+/// rebuilds and off/on, so the canceller doesn't have to re-learn.
 final class Supervisor {
     private(set) var micUID: String
     private let outputUID: String?, desktopUID: String?
@@ -34,9 +35,11 @@ final class Supervisor {
     let processors: [Processor]
     private let recordSeconds: Double?
 
-    private(set) var device: CaptureDevice
-    private(set) var engine: Engine
-    private var keepAlive: KeepAliveHelper
+    /// nil while switched off
+    private(set) var device: CaptureDevice?
+    private(set) var engine: Engine?
+    private var keepAlive: KeepAliveHelper?
+    var isOn: Bool { keepAlive != nil }
     private var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
     /// Bumped on every rebuild. Core Audio can't always match a Swift block for removal, so listeners
     /// from an earlier setup may keep firing; they check this and ignore themselves.
@@ -50,21 +53,38 @@ final class Supervisor {
     private(set) var recoveries = 0
 
     init(mic: AudioDevice, output: AudioDevice?, desktopOutput: AudioDevice?, micChannel: Int,
-         processors: [Processor], recordSeconds: Double?) throws {
+         processors: [Processor], recordSeconds: Double?, on: Bool = true) throws {
         micUID = mic.uid; outputUID = output?.uid; desktopUID = desktopOutput?.uid
         self.micChannel = micChannel
         self.processors = processors
         self.recordSeconds = recordSeconds
-        keepAlive = try KeepAliveHelper()
-        device = try CaptureDevice(mic: mic, output: output, desktopOutput: desktopOutput)
-        engine = try Engine(device: device, micChannel: micChannel, processors: processors, recordSeconds: recordSeconds)
-        try engine.start()
-        defaultOutput = Supervisor.currentDefaultOutput()
-        installListeners()
+        if on { try turnOn() }
+    }
+
+    /// Start capturing. On failure everything is released again and it stays off.
+    func turnOn() throws {
+        guard !isOn else { return }
+        do {
+            keepAlive = try KeepAliveHelper()
+            defaultOutput = Supervisor.currentDefaultOutput()
+            try build()
+        } catch {
+            turnOff()
+            throw error
+        }
+    }
+
+    /// Release the mic, the tap and the virtual outputs (they go silent).
+    func turnOff() {
+        pendingReason = nil  // a rebuild already scheduled sees it's off and does nothing
+        teardown()
+        keepAlive?.stop()
+        keepAlive = nil
     }
 
     /// Called once a second from the main thread.
     func tick() {
+        guard let engine else { return }
         let callbacks = engine.callbacks
         if callbacks == lastCallbacks {
             stalledSeconds += 1
@@ -79,20 +99,21 @@ final class Supervisor {
     func useMic(_ device: AudioDevice) {
         guard device.uid != micUID else { return }
         micUID = device.uid
-        recover("switched microphone to \(device.name)")
+        if isOn { recover("switched microphone to \(device.name)") }
     }
 
     func stop() {
         removeListeners()
-        engine.stop()
-        keepAlive.stop()
+        engine?.stop()
+        keepAlive?.stop()
     }
 
-    func destroy() { device.destroy() }
+    func destroy() { device?.destroy() }
 
     // MARK: recovery
 
     func recover(_ reason: String) {
+        guard isOn else { return }
         // Rebuilding itself triggers device notifications; coalesce bursts and rate-limit.
         if pendingReason != nil { return }
         pendingReason = reason
@@ -101,42 +122,58 @@ final class Supervisor {
     }
 
     private func rebuild() {
-        let reason = pendingReason ?? "unknown"
+        guard let reason = pendingReason, isOn else { return }  // switched off in the meantime
         pendingReason = nil
         Log.write("⚠️  \(reason) — rebuilding audio capture")
-        removeListeners()
-        engine.stop()
-        device.destroy()
+        teardown()
         lastRestart = Date()
-
-        let devices = AudioDevice.all()
-        func find(_ uid: String?) -> AudioDevice? { uid.flatMap { u in devices.first { $0.uid == u } } }
-        let missing = [("mic", micUID as String?), ("output", outputUID), ("desktop output", desktopUID)]
-            .filter { $0.1 != nil && find($0.1) == nil }.map(\.0)
-        guard missing.isEmpty, let mic = find(micUID) else {
-            Log.write("   waiting for \(missing.joined(separator: ", ")) to come back…")
-            retry(reason)
-            return
-        }
         do {
             let newDefault = Supervisor.currentDefaultOutput()
             if newDefault != defaultOutput {  // the keep-alive plays to the default output; follow it
-                keepAlive.stop()
+                keepAlive?.stop()
                 keepAlive = try KeepAliveHelper()
                 defaultOutput = newDefault
             }
-            device = try CaptureDevice(mic: mic, output: find(outputUID), desktopOutput: find(desktopUID))
-            engine = try Engine(device: device, micChannel: micChannel, processors: processors, recordSeconds: recordSeconds)
-            try engine.start()
-            installListeners()
+            try build()
             recoveries += 1
-            stalledSeconds = 0
-            lastCallbacks = -1
             Log.write("✅ recovered (\(recoveries) so far this session)")
+        } catch let error as MissingDevices {
+            Log.write("   waiting for \(error.names.joined(separator: ", ")) to come back…")
+            retry(reason)
         } catch {
             Log.write("   rebuild failed: \(error)")
             retry(reason)
         }
+    }
+
+    struct MissingDevices: Error, CustomStringConvertible {
+        let names: [String]
+        var description: String { "\(names.joined(separator: ", ")) not found" }
+    }
+
+    /// Create the capture device and engine for the current mic and outputs, and start it.
+    private func build() throws {
+        let devices = AudioDevice.all()
+        func find(_ uid: String?) -> AudioDevice? { uid.flatMap { u in devices.first { $0.uid == u } } }
+        let missing = [("mic", micUID as String?), ("output", outputUID), ("desktop output", desktopUID)]
+            .filter { $0.1 != nil && find($0.1) == nil }.map(\.0)
+        guard missing.isEmpty, let mic = find(micUID) else { throw MissingDevices(names: missing) }
+        let device = try CaptureDevice(mic: mic, output: find(outputUID), desktopOutput: find(desktopUID))
+        self.device = device
+        let engine = try Engine(device: device, micChannel: micChannel, processors: processors, recordSeconds: recordSeconds)
+        self.engine = engine
+        try engine.start()
+        installListeners()
+        stalledSeconds = 0
+        lastCallbacks = -1
+    }
+
+    private func teardown() {
+        removeListeners()
+        engine?.stop()
+        device?.destroy()
+        engine = nil
+        device = nil
     }
 
     private func retry(_ reason: String) {
@@ -165,6 +202,7 @@ final class Supervisor {
             let rate = Supervisor.sampleRate(defaultOutput)
             if rate != speakerRate { recover("speaker sample rate changed (\(Int(speakerRate)) → \(Int(rate)) Hz)") }
         }
+        guard let device else { return }
         let aggregate = device.aggregateID
         listen(aggregate, kAudioDevicePropertyDeviceIsAlive) { [unowned self] in
             var alive: UInt32 = 1
