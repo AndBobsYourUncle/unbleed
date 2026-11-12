@@ -103,15 +103,23 @@ final class CaptureDevice {
         var tapID = AudioObjectID(0)
         try check(AudioHardwareCreateProcessTap(tap, &tapID), "create system audio tap")
 
-        var subdevices: [[String: Any]] = [[kAudioSubDeviceUIDKey: mic.uid]]
-        for device in [output, desktopOutput].compactMap({ $0 }) {
-            subdevices.append([kAudioSubDeviceUIDKey: device.uid, kAudioSubDeviceDriftCompensationKey: true])
+        // The cleaned-mic output is the clock, so our writes land on its own timeline. Clocked by the mic
+        // instead, the writes slowly slip against it (a USB mic a few ppm fast loses ~15 ms an hour) until
+        // the virtual device decides nobody is writing and gives OBS pure silence. The mic is resampled
+        // in, like the tap; the other virtual output runs on the same host clock, so it can't drift.
+        let clock = output ?? mic
+        var subdevices: [[String: Any]] = []
+        for device in [output, mic, desktopOutput].compactMap({ $0 }) {
+            subdevices.append(device.uid == clock.uid ? [kAudioSubDeviceUIDKey: device.uid] : [
+                kAudioSubDeviceUIDKey: device.uid, kAudioSubDeviceDriftCompensationKey: true,
+                kAudioSubDeviceDriftCompensationQualityKey: kAudioSubDeviceDriftCompensationMaxQuality,
+            ])
         }
 
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: Brand.name,
             kAudioAggregateDeviceUIDKey: "\(Brand.aggregatePrefix).\(UUID().uuidString)",
-            kAudioAggregateDeviceMainSubDeviceKey: mic.uid,
+            kAudioAggregateDeviceMainSubDeviceKey: clock.uid,
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             kAudioAggregateDeviceTapAutoStartKey: true,
